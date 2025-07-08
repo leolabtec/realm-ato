@@ -92,4 +92,68 @@ list_rules() {
 }
 
 delete_rule() {
-    mapfile -t LINE_NUMS < <(grep -n '\[\[endpoints\]\
+    mapfile -t LINE_NUMS < <(grep -n '\[\[endpoints\]\]' "$CONFIG_PATH" | cut -d: -f1)
+    total=${#LINE_NUMS[@]}
+    if [ $total -eq 0 ]; then
+        echo "⚠️ 没有可删除的规则"
+        read -rp "按回车键返回菜单..."
+        return
+    fi
+
+    echo "🗑️ 可删除的规则："
+    for i in "${!LINE_NUMS[@]}"; do
+        idx=$((i+1))
+        line=${LINE_NUMS[$i]}
+        tag=$(sed -n "$((line+1))p" "$CONFIG_PATH" | grep 'tag' | cut -d'"' -f2)
+        echo "$idx) $tag"
+    done
+    echo "0) 取消"
+    read -rp "输入要删除的规则编号： " num
+
+    if [ "$num" = "0" ]; then
+        return
+    elif ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "$total" ]; then
+        echo "❌ 无效的选择"
+        read -rp "按回车键返回菜单..."
+        return
+    fi
+
+    cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
+
+    start=${LINE_NUMS[$((num-1))]}
+    if [ "$num" -eq "$total" ]; then
+        end=$(wc -l < "$CONFIG_PATH")
+    else
+        end=$(( ${LINE_NUMS[$num]} - 1 ))
+    fi
+
+    sed -i "${start},${end}d" "$CONFIG_PATH"
+
+    if systemctl restart "$REALM_SERVICE" 2>/dev/null; then
+        echo "✅ 规则 $num 已删除"
+        log_action "删除规则 [$num]"
+    else
+        echo "❌ 无法重启 $REALM_SERVICE"
+        mv "${CONFIG_PATH}.bak" "$CONFIG_PATH"
+        read -rp "按回车键返回菜单..."
+    fi
+}
+
+# 主菜单循环
+while true; do
+    clear
+    echo "=== Realm 转发规则管理器 ==="
+    echo "1) 创建规则"
+    echo "2) 查看规则"
+    echo "3) 删除规则"
+    echo "0) 退出"
+    echo "============================="
+    read -rp "请选择操作： " choice
+    case "$choice" in
+        1) create_rule ;;
+        2) list_rules ;;
+        3) delete_rule ;;
+        0) exit 0 ;;
+        *) echo "❌ 无效的选项"; read -rp "按回车键继续..." ;;
+    esac
+done
