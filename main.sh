@@ -4,10 +4,8 @@ CONFIG_PATH="/etc/realm/config.toml"
 REALM_SERVICE="realm"
 RULE_LOG="/var/log/realm_rules.log"
 
-# 确保日志文件存在并具有适当的权限
 [ ! -f "$RULE_LOG" ] && touch "$RULE_LOG" && chmod 644 "$RULE_LOG"
 
-# 检查配置文件是否可写
 if [ ! -w "$CONFIG_PATH" ]; then
     echo "❌ 错误：无法写入 $CONFIG_PATH。请以足够权限运行。"
     exit 1
@@ -18,7 +16,6 @@ check_port() {
 }
 
 validate_ip_port() {
-    # 验证 IP:端口 或 主机名:端口 格式
     [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$ ]] || 
     [[ "$1" =~ ^[a-zA-Z0-9.-]+:[0-9]{1,5}$ ]]
 }
@@ -56,6 +53,7 @@ create_rule() {
     cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
 
     cat <<EOF >> "$CONFIG_PATH"
+
 [[endpoints]]
 tag = "$rule_tag"
 listen = "0.0.0.0:$listen_port"
@@ -66,9 +64,8 @@ EOF
         echo "✅ 规则已添加：$rule_tag -> 监听: $listen_port, 远程: $remote"
         log_action "添加规则 [$rule_tag] - 监听: $listen_port -> $remote"
     else
-        echo "❌ 无法重启 $REALM_SERVICE"
-        mv "${CONFIG_PATH}.bak" "$CONFIG_PATH"
-        exit 1
+        echo "❌ 无法重启 $REALM_SERVICE，请手动检查配置是否正确。"
+        echo "❗ 保留当前配置文件，不回滚，请手动恢复 ${CONFIG_PATH}.bak 如有需要。"
     fi
 }
 
@@ -92,8 +89,9 @@ list_rules() {
 }
 
 delete_rule() {
-    mapfile -t LINE_NUMS < <(grep -n '\[\[endpoints\]\]' "$CONFIG_PATH" | cut -d: -f1)
-    total=${#LINE_NUMS[@]}
+    mapfile -t BLOCKS < <(awk '/\[\[endpoints\]\]/{s=NR} /\[\[endpoints\]\]/&&NR>s{print s":"NR-1; s=NR} END{print s":"NR}' "$CONFIG_PATH")
+    total=${#BLOCKS[@]}
+
     if [ $total -eq 0 ]; then
         echo "⚠️ 没有可删除的规则"
         read -rp "按回车键返回菜单..."
@@ -101,18 +99,17 @@ delete_rule() {
     fi
 
     echo "🗑️ 可删除的规则："
-    for i in "${!LINE_NUMS[@]}"; do
+    for i in "${!BLOCKS[@]}"; do
         idx=$((i+1))
-        line=${LINE_NUMS[$i]}
-        tag=$(sed -n "$((line+1))p" "$CONFIG_PATH" | grep 'tag' | cut -d'"' -f2)
+        start=${BLOCKS[$i]%:*}
+        tag=$(sed -n "$((start+1))p" "$CONFIG_PATH" | grep 'tag' | cut -d'"' -f2)
         echo "$idx) $tag"
     done
     echo "0) 取消"
     read -rp "输入要删除的规则编号： " num
 
-    if [ "$num" = "0" ]; then
-        return
-    elif ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "$total" ]; then
+    if [ "$num" = "0" ]; then return; fi
+    if ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "$total" ]; then
         echo "❌ 无效的选择"
         read -rp "按回车键返回菜单..."
         return
@@ -120,26 +117,25 @@ delete_rule() {
 
     cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
 
-    start=${LINE_NUMS[$((num-1))]}
-    if [ "$num" -eq "$total" ]; then
-        end=$(wc -l < "$CONFIG_PATH")
-    else
-        end=$(( ${LINE_NUMS[$num]} - 1 ))
-    fi
+    del_block="${BLOCKS[$((num-1))]}"
+    start=${del_block%:*}
+    end=${del_block#*:}
 
     sed -i "${start},${end}d" "$CONFIG_PATH"
 
     if systemctl restart "$REALM_SERVICE" 2>/dev/null; then
-        echo "✅ 规则 $num 已删除"
-        log_action "删除规则 [$num]"
+        echo "✅ 已删除规则 #$num，配置文件已更新"
+        log_action "删除规则 #$num"
     else
-        echo "❌ 无法重启 $REALM_SERVICE"
-        mv "${CONFIG_PATH}.bak" "$CONFIG_PATH"
-        read -rp "按回车键返回菜单..."
+        echo "❌ 无法重启 $REALM_SERVICE，请检查配置语法。保留已修改配置（未回滚）。"
+        echo "🛠️ 请手动恢复 ${CONFIG_PATH}.bak 如有需要。"
     fi
+
+    echo -e "\n📂 当前配置文件预览："
+    grep -A 2 '\[\[endpoints\]\]' "$CONFIG_PATH" | sed 's/^/   /'
+    read -rp "按回车键返回菜单..."
 }
 
-# 主菜单循环
 while true; do
     clear
     echo "=== Realm 转发规则管理器 ==="
