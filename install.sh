@@ -2,43 +2,57 @@
 
 set -e
 
-REALM_DIR="/etc/realm"
-REALM_BIN="$REALM_DIR/realm"
-CONFIG_PATH="$REALM_DIR/config.toml"
-SERVICE_PATH="/etc/systemd/system/realm.service"
+# 1. 创建工作目录
+mkdir -p /root/realm
+mkdir -p /root/.realm
 
-mkdir -p "$REALM_DIR"
+# 2. 获取最新版本号
+echo "获取 realm 最新版本..."
+REALM_LATEST=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+if [[ -z "$REALM_LATEST" ]]; then
+    echo "获取版本失败，请检查网络连接或 GitHub API 是否受限"
+    exit 1
+fi
+echo "最新版本：$REALM_LATEST"
 
-# 获取最新版本 tag
-echo "[信息] 正在获取 Realm 最新版本..."
-LATEST_TAG=$(curl -s https://api.github.com/repos/zhboner/realm/releases/latest | grep tag_name | cut -d '"' -f4)
-DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_TAG}/realm-x86_64-unknown-linux-gnu.tar.gz"
+# 3. 检测系统架构
+ARCH=$(uname -m)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
-echo "[信息] 下载地址: $DOWNLOAD_URL"
+case "${ARCH}-${OS}" in
+  x86_64-linux)
+    FILE_NAME="realm-x86_64-unknown-linux-gnu.tar.gz"
+    ;;
+  aarch64-linux)
+    FILE_NAME="realm-aarch64-unknown-linux-gnu.tar.gz"
+    ;;
+  armv7l-linux)
+    FILE_NAME="realm-armv7-unknown-linux-gnueabi.tar.gz"
+    ;;
+  *)
+    echo "不支持的架构：$ARCH-$OS"
+    exit 1
+    ;;
+esac
 
-# 下载并解压
-echo "[信息] 正在下载 Realm $LATEST_TAG ..."
-wget -qO "$REALM_DIR/realm.tar.gz" "$DOWNLOAD_URL"
+# 4. 下载并解压
+DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${REALM_LATEST}/${FILE_NAME}"
+echo "下载地址：$DOWNLOAD_URL"
 
-echo "[信息] 正在解压..."
-tar -zxvf "$REALM_DIR/realm.tar.gz" -C "$REALM_DIR"
-chmod +x "$REALM_BIN"
-rm -f "$REALM_DIR/realm.tar.gz"
+cd /root/realm
+wget -O realm.tar.gz "$DOWNLOAD_URL"
+tar -xvf realm.tar.gz
+chmod +x realm
 
-# 创建默认配置
-if [ ! -f "$CONFIG_PATH" ]; then
-  echo "[信息] 创建默认配置文件 config.toml ..."
-  cat <<EOF > "$CONFIG_PATH"
+# 5. 创建空白配置文件（只包含网络设置）
+cat > /root/.realm/config.toml <<EOF
 [network]
 no_tcp = false
 use_udp = true
 EOF
-  echo "[信息] 默认配置文件已创建。"
-fi
 
-# 创建 systemd 服务文件（含资源限制）
-echo "[信息] 创建 systemd 服务..."
-cat <<EOF > "$SERVICE_PATH"
+# 6. 写入 systemd 服务文件
+cat > /etc/systemd/system/realm.service <<EOF
 [Unit]
 Description=Realm Port Forwarding
 After=network-online.target
@@ -47,29 +61,22 @@ Wants=network-online.target systemd-networkd-wait-online.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=$REALM_DIR
-ExecStartPre=/bin/bash -c 'ulimit -n 1048576'
-ExecStart=$REALM_BIN -c $CONFIG_PATH
-LimitNOFILE=1048576
-LimitNPROC=65535
-Environment="RUST_BACKTRACE=1"
-Restart=always
+Restart=on-failure
 RestartSec=5s
+DynamicUser=true
+WorkingDirectory=/root/realm
+ExecStart=/root/realm/realm -c /root/.realm/config.toml
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 重载 systemd 并启动服务
-echo "[信息] 启用开机启动并启动 Realm 服务..."
-systemctl daemon-reexec
+# 7. 重新加载 systemd 并提示完成
 systemctl daemon-reload
-systemctl enable realm
-systemctl restart realm
 
-# 显示版本信息
-REALM_VERSION=$($REALM_BIN -v)
-echo ""
-echo "✅ Realm 安装完成：$REALM_VERSION"
-echo "📂 配置文件路径：$CONFIG_PATH"
-echo "🛠️ systemd 启动已设置，并提升了文件句柄限制（ulimit -n 1048576）"
+echo -e "\n✅ Realm ${REALM_LATEST} 已成功安装！"
+echo "配置文件路径：/root/.realm/config.toml"
+echo "执行以下命令以启动服务："
+echo "  systemctl start realm"
+echo "如需开机自启："
+echo "  systemctl enable realm"
