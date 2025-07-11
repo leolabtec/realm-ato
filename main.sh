@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CONFIG_PATH="/etc/realm/config.toml"
+CONFIG_PATH="/root/.realm/config.toml"
 REALM_SERVICE="realm"
 RULE_LOG="/var/log/realm_rules.log"
 
@@ -26,7 +26,7 @@ log_action() {
 
 create_rule() {
     while true; do
-        read -rp "规则名称（例如：hongkong_forward）： " rule_tag
+        read -rp "规则名称（例如：hk_forward）： " rule_tag
         rule_tag=$(echo "$rule_tag" | tr -d '" ' | tr -s '\t')
         [ -z "$rule_tag" ] && { echo "❌ 规则名称不能为空"; continue; }
         grep -q "tag = \"$rule_tag\"" "$CONFIG_PATH" && { echo "❌ 规则名称已存在"; continue; }
@@ -37,7 +37,7 @@ create_rule() {
         read -rp "监听端口（例如：8765）： " listen_port
         listen_port=$(echo "$listen_port" | tr -d ' ')
         if ! [[ "$listen_port" =~ ^[0-9]{1,5}$ ]] || [ "$listen_port" -lt 1 ] || [ "$listen_port" -gt 65535 ]; then
-            echo "❌ 无效的端口号（必须为 1-65535）"
+            echo "❌ 无效端口号（1~65535）"
             continue
         fi
         check_port "$listen_port" && { echo "❌ 端口 $listen_port 已被占用"; continue; }
@@ -45,7 +45,7 @@ create_rule() {
     done
 
     while true; do
-        read -rp "远程地址:端口（例如：1.1.1.1:7777 或 ddns.com:8888）： " remote
+        read -rp "远程地址:端口（如 1.1.1.1:7777 或 ddns.com:8888）： " remote
         remote=$(echo "$remote" | tr -d ' ')
         validate_ip_port "$remote" && break || echo "❌ 格式错误。使用 IP:端口 或 主机名:端口"
     done
@@ -61,11 +61,10 @@ remote = "$remote"
 EOF
 
     if systemctl restart "$REALM_SERVICE" 2>/dev/null; then
-        echo "✅ 规则已添加：$rule_tag -> 监听: $listen_port, 远程: $remote"
+        echo "✅ 添加成功：$rule_tag -> $listen_port ➜ $remote"
         log_action "添加规则 [$rule_tag] - 监听: $listen_port -> $remote"
     else
-        echo "❌ 无法重启 $REALM_SERVICE，请手动检查配置是否正确。"
-        echo "❗ 保留当前配置文件，不回滚，请手动恢复 ${CONFIG_PATH}.bak 如有需要。"
+        echo "❌ 无法重启 $REALM_SERVICE，配置可能有误。请检查或手动恢复 ${CONFIG_PATH}.bak"
     fi
 }
 
@@ -124,11 +123,10 @@ delete_rule() {
     sed -i "${start},${end}d" "$CONFIG_PATH"
 
     if systemctl restart "$REALM_SERVICE" 2>/dev/null; then
-        echo "✅ 已删除规则 #$num，配置文件已更新"
+        echo "✅ 规则已删除 (#$num)"
         log_action "删除规则 #$num"
     else
-        echo "❌ 无法重启 $REALM_SERVICE，请检查配置语法。保留已修改配置（未回滚）。"
-        echo "🛠️ 请手动恢复 ${CONFIG_PATH}.bak 如有需要。"
+        echo "❌ 重启失败，请检查配置语法。已保留修改，请自行恢复 ${CONFIG_PATH}.bak"
     fi
 
     echo -e "\n📂 当前配置文件预览："
@@ -136,12 +134,24 @@ delete_rule() {
     read -rp "按回车键返回菜单..."
 }
 
+restart_service() {
+    echo "🔄 正在重启 Realm 服务..."
+    if systemctl restart "$REALM_SERVICE"; then
+        echo "✅ Realm 服务已成功重启"
+    else
+        echo "❌ 重启失败，请检查配置文件或 systemd 日志"
+    fi
+    read -rp "按回车键返回菜单..."
+}
+
+# 主菜单循环
 while true; do
     clear
     echo "=== Realm 转发规则管理器 ==="
     echo "1) 创建规则"
     echo "2) 查看规则"
     echo "3) 删除规则"
+    echo "4) 重启 Realm 服务"
     echo "0) 退出"
     echo "============================="
     read -rp "请选择操作： " choice
@@ -149,7 +159,8 @@ while true; do
         1) create_rule ;;
         2) list_rules ;;
         3) delete_rule ;;
+        4) restart_service ;;
         0) exit 0 ;;
-        *) echo "❌ 无效的选项"; read -rp "按回车键继续..." ;;
+        *) echo "❌ 无效选项"; read -rp "按回车继续..." ;;
     esac
 done
