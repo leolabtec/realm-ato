@@ -88,26 +88,47 @@ list_rules() {
 }
 
 delete_rule() {
-    mapfile -t BLOCKS < <(awk '/\[\[endpoints\]\]/{s=NR} /\[\[endpoints\]\]/&&NR>s{print s":"NR-1; s=NR} END{print s":"NR}' "$CONFIG_PATH")
-    total=${#BLOCKS[@]}
+    # 读取每个 [[endpoints]] 配置块（起始行号和内容）
+    mapfile -t BLOCKS < <(awk '
+        BEGIN { RS="\\[\\[endpoints\\]\\]"; ORS=""; i=0 }
+        NR > 1 {
+            i++
+            start_line = line_num + 1
+            len = split($0, lines, "\n")
+            end_line = line_num + len
+            tags[i] = gensub(/.*tag *= *"([^"]+)".*/, "\\1", "g", $0)
+            listens[i] = gensub(/.*listen *= *"([^"]+)".*/, "\\1", "g", $0)
+            remotes[i] = gensub(/.*remote *= *"([^"]+)".*/, "\\1", "g", $0)
+            block[i] = start_line ":" end_line
+            line_num = end_line
+        }
+        END {
+            for (j = 1; j <= i; j++) {
+                print j "|" block[j] "|" tags[j] "|" listens[j] "|" remotes[j] "\n"
+            }
+        }
+    ' "$CONFIG_PATH")
 
-    if [ $total -eq 0 ]; then
+    total=${#BLOCKS[@]}
+    if [ "$total" -eq 0 ]; then
         echo "⚠️ 没有可删除的规则"
         read -rp "按回车键返回菜单..."
         return
     fi
 
     echo "🗑️ 可删除的规则："
-    for i in "${!BLOCKS[@]}"; do
-        idx=$((i+1))
-        start=${BLOCKS[$i]%:*}
-        tag=$(sed -n "$((start+1))p" "$CONFIG_PATH" | grep 'tag' | cut -d'"' -f2)
-        echo "$idx) $tag"
+    for entry in "${BLOCKS[@]}"; do
+        IFS="|" read -r idx range tag listen remote <<< "$entry"
+        echo "$idx) [$tag]"
+        echo "   监听: $listen"
+        echo "   远程: $remote"
+        echo "--------------------------"
     done
     echo "0) 取消"
+
     read -rp "输入要删除的规则编号： " num
 
-    if [ "$num" = "0" ]; then return; fi
+    if [[ "$num" == "0" ]]; then return; fi
     if ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "$total" ]; then
         echo "❌ 无效的选择"
         read -rp "按回车键返回菜单..."
@@ -116,23 +137,25 @@ delete_rule() {
 
     cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
 
-    del_block="${BLOCKS[$((num-1))]}"
-    start=${del_block%:*}
-    end=${del_block#*:}
+    sel="${BLOCKS[$((num-1))]}"
+    IFS="|" read -r idx range tag listen remote <<< "$sel"
+    start=${range%:*}
+    end=${range#*:}
 
     sed -i "${start},${end}d" "$CONFIG_PATH"
 
     if systemctl restart "$REALM_SERVICE" 2>/dev/null; then
-        echo "✅ 规则已删除 (#$num)"
-        log_action "删除规则 #$num"
+        echo "✅ 规则 [$tag] (#$num) 已成功删除"
+        log_action "删除规则 [$tag] - 原监听: $listen -> $remote"
     else
-        echo "❌ 重启失败，请检查配置语法。已保留修改，请自行恢复 ${CONFIG_PATH}.bak"
+        echo "❌ 重启失败，请检查配置文件。保留已修改备份 ${CONFIG_PATH}.bak"
     fi
 
     echo -e "\n📂 当前配置文件预览："
     grep -A 2 '\[\[endpoints\]\]' "$CONFIG_PATH" | sed 's/^/   /'
     read -rp "按回车键返回菜单..."
 }
+
 
 restart_service() {
     echo "🔄 正在重启 Realm 服务..."
