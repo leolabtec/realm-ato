@@ -11,8 +11,12 @@ if [ ! -w "$CONFIG_PATH" ]; then
     exit 1
 fi
 
-check_port() {
-    netstat -tuln 2>/dev/null | grep -q ":$1[ \t]" && return 0 || return 1
+check_system_port() {
+    netstat -tuln 2>/dev/null | grep -q ":$1[[:space:]]" && return 0 || return 1
+}
+
+check_config_port() {
+    grep -q "listen = .*:$1\"" "$CONFIG_PATH" && return 0 || return 1
 }
 
 validate_ip_port() {
@@ -40,7 +44,14 @@ create_rule() {
             echo "❌ 无效端口号（1~65535）"
             continue
         fi
-        check_port "$listen_port" && { echo "❌ 端口 $listen_port 已被占用"; continue; }
+        if check_system_port "$listen_port"; then
+            echo "❌ 端口 $listen_port 已被系统占用"
+            continue
+        fi
+        if check_config_port "$listen_port"; then
+            echo "❌ 端口 $listen_port 已在 Realm 配置中使用"
+            continue
+        fi
         break
     done
 
@@ -64,7 +75,8 @@ EOF
         echo "✅ 添加成功：$rule_tag -> $listen_port ➜ $remote"
         log_action "添加规则 [$rule_tag] - 监听: $listen_port -> $remote"
     else
-        echo "❌ 无法重启 $REALM_SERVICE，配置可能有误。请检查或手动恢复 ${CONFIG_PATH}.bak"
+        mv "${CONFIG_PATH}.bak" "$CONFIG_PATH"
+        echo "❌ 无法重启 $REALM_SERVICE，已还原配置。请检查语法。"
     fi
 }
 
@@ -88,72 +100,76 @@ list_rules() {
 }
 
 delete_rule() {
-    # 读取每个 [[endpoints]] 配置块（起始行号和内容）
-    mapfile -t BLOCKS < <(awk '
-        BEGIN { RS="\\[\\[endpoints\\]\\]"; ORS=""; i=0 }
-        NR > 1 {
-            i++
-            start_line = line_num + 1
-            len = split($0, lines, "\n")
-            end_line = line_num + len
-            tags[i] = gensub(/.*tag *= *"([^"]+)".*/, "\\1", "g", $0)
-            listens[i] = gensub(/.*listen *= *"([^"]+)".*/, "\\1", "g", $0)
-            remotes[i] = gensub(/.*remote *= *"([^"]+)".*/, "\\1", "g", $0)
-            block[i] = start_line ":" end_line
-            line_num = end_line
+    echo "🗑️ 正在扫描配置文件中的规则..."
+
+    mapfile -t RULES < <(awk '
+        BEGIN { start = 0; tag = ""; listen = ""; remote = "" }
+        {
+            if ($0 ~ /^\[\[endpoints\]\]/) {
+                if (start > 0) {
+                    printf("%d|%d|%s|%s|%s\n", start, NR-1, tag, listen, remote)
+                }
+                start = NR
+                tag = ""; listen = ""; remote = ""
+            }
+            if ($0 ~ /tag *= *".*"/) {
+                match($0, /tag *= *"([^"]+)"/, a); tag = a[1]
+            }
+            if ($0 ~ /listen *= *".*"/) {
+                match($0, /listen *= *"([^"]+)"/, a); listen = a[1]
+            }
+            if ($0 ~ /remote *= *".*"/) {
+                match($0, /remote *= *"([^"]+)"/, a); remote = a[1]
+            }
         }
         END {
-            for (j = 1; j <= i; j++) {
-                print j "|" block[j] "|" tags[j] "|" listens[j] "|" remotes[j] "\n"
+            if (start > 0) {
+                printf("%d|%d|%s|%s|%s\n", start, NR, tag, listen, remote)
             }
         }
     ' "$CONFIG_PATH")
 
-    total=${#BLOCKS[@]}
+    total=${#RULES[@]}
     if [ "$total" -eq 0 ]; then
-        echo "⚠️ 没有可删除的规则"
-        read -rp "按回车键返回菜单..."
+        echo "⚠️ 未找到任何规则块"
+        read -rp "按回车返回菜单..."
         return
     fi
 
-    echo "🗑️ 可删除的规则："
-    for entry in "${BLOCKS[@]}"; do
-        IFS="|" read -r idx range tag listen remote <<< "$entry"
+    echo "🔍 可删除的规则列表："
+    for i in "${!RULES[@]}"; do
+        IFS="|" read -r start end tag listen remote <<< "${RULES[i]}"
+        idx=$((i+1))
         echo "$idx) [$tag]"
         echo "   监听: $listen"
         echo "   远程: $remote"
-        echo "--------------------------"
+        echo "-----------------------------"
     done
     echo "0) 取消"
 
-    read -rp "输入要删除的规则编号： " num
-
-    if [[ "$num" == "0" ]]; then return; fi
-    if ! [[ "$num" =~ ^[0-9]+$ ]] || [ "$num" -lt 1 ] || [ "$num" -gt "$total" ]; then
-        echo "❌ 无效的选择"
-        read -rp "按回车键返回菜单..."
+    read -rp "请输入要删除的规则编号： " sel
+    if [[ "$sel" == "0" ]]; then return; fi
+    if ! [[ "$sel" =~ ^[0-9]+$ ]] || [ "$sel" -lt 1 ] || [ "$sel" -gt "$total" ]; then
+        echo "❌ 无效输入"
+        read -rp "按回车返回菜单..."
         return
     fi
 
     cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
 
-    sel="${BLOCKS[$((num-1))]}"
-    IFS="|" read -r idx range tag listen remote <<< "$sel"
-    start=${range%:*}
-    end=${range#*:}
+    IFS="|" read -r start end tag listen remote <<< "${RULES[$((sel-1))]}"
 
     sed -i "${start},${end}d" "$CONFIG_PATH"
 
-    if systemctl restart "$REALM_SERVICE" 2>/dev/null; then
-        echo "✅ 规则 [$tag] (#$num) 已成功删除"
+    if systemctl restart "$REALM_SERVICE"; then
+        echo "✅ 已删除规则 [$tag] (监听 $listen ➜ $remote)"
         log_action "删除规则 [$tag] - 原监听: $listen -> $remote"
     else
-        echo "❌ 重启失败，请检查配置文件。保留已修改备份 ${CONFIG_PATH}.bak"
+        mv "${CONFIG_PATH}.bak" "$CONFIG_PATH"
+        echo "❌ Realm 重启失败，配置已还原"
     fi
 
-    echo -e "\n📂 当前配置文件预览："
-    grep -A 2 '\[\[endpoints\]\]' "$CONFIG_PATH" | sed 's/^/   /'
-    read -rp "按回车键返回菜单..."
+    read -rp "按回车返回菜单..."
 }
 
 
