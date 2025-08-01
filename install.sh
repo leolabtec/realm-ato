@@ -73,6 +73,7 @@ EOF
 
 # 7. 重新加载 systemd 并提示完成
 systemctl daemon-reload
+systemctl enable realm
 
 echo -e "\n✅ Realm ${REALM_LATEST} 已成功安装！"
 echo "配置文件路径：/root/.realm/config.toml"
