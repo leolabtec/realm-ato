@@ -75,9 +75,9 @@ EOF
 systemctl daemon-reload
 systemctl enable realm
 
-echo -e "\n✅ Realm ${REALM_LATEST} 已成功安装！"
-echo "配置文件路径：/root/.realm/config.toml"
-echo "执行以下命令以启动服务："
-echo "  systemctl start realm"
-echo "如需开机自启："
-echo "  systemctl enable realm"
+#echo -e "\n✅ Realm ${REALM_LATEST} 已成功安装！"
+#echo "配置文件路径：/root/.realm/config.toml"
+#echo "执行以下命令以启动服务："
+#echo "  systemctl start realm"
+#echo "如需开机自启："
+#echo "  systemctl enable realm"
