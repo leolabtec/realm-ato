@@ -1,8 +1,8 @@
 #!/bin/bash
 # =========================================================
-# Realm 转发规则管理器 v1.2 (终结版带手动重启)
+# Realm 转发规则管理器 v1.3 (终结版)
 # 功能：
-#  - 校验监听 IP 必须属于本机接口或公网 IP (0.0.0.0/:: 可选)
+#  - 校验监听 IP 必须属于本机接口 IP (0.0.0.0/:: 可选)
 #  - 双重校验监听端口是否被占用
 #  - 支持添加/查看/删除规则
 #  - 自动重启 Realm（添加/删除规则后）
@@ -17,27 +17,23 @@ RULE_LOG="/var/log/realm_rules.log"
 [ ! -f "$RULE_LOG" ] && touch "$RULE_LOG" && chmod 644 "$RULE_LOG"
 [ ! -f "$CONFIG_PATH" ] && mkdir -p "$(dirname "$CONFIG_PATH")" && touch "$CONFIG_PATH"
 
+# 检查端口占用，双重检查：0.0.0.0:$port 和指定IP:$port
 check_port() {
     local ip="$1"
     local port="$2"
     ss -tuln | grep -qE "0\.0\.0\.0:$port|$ip:$port" && return 1 || return 0
 }
 
+# 获取本机所有接口 IP
 get_local_ips() {
     ip -o addr show | awk '{print $4}' | cut -d/ -f1
 }
 
-get_public_ips() {
-    ipv4=$(curl -s4 ifconfig.co)
-    ipv6=$(curl -s6 ifconfig.co)
-    [ -n "$ipv4" ] && echo "$ipv4"
-    [ -n "$ipv6" ] && echo "$ipv6"
-}
-
+# 校验 IP 是否在本机接口或 0.0.0.0/:: 
 validate_ip() {
     local ip="$1"
     [[ "$ip" == "0.0.0.0" || "$ip" == "::" ]] && return 0
-    for i in $(get_local_ips) $(get_public_ips); do
+    for i in $(get_local_ips); do
         [[ "$ip" == "$i" ]] && return 0
     done
     return 1
@@ -49,17 +45,18 @@ log_action() {
 
 create_rule() {
     echo "=== 新建 Realm 转发规则 ==="
-    echo "本机接口 IP：0.0.0.0"
+    echo "本机接口 IP："
     get_local_ips | sed 's/^/   - /'
-    echo "公网 IP："
-    get_public_ips | sed 's/^/   - /'
+    echo "可选监听: 0.0.0.0 或 ::"
 
+    # 监听 IP
     while true; do
-        read -rp "监听 IP (可选 0.0.0.0/::): " listen_ip
+        read -rp "监听 IP: " listen_ip
         listen_ip=$(echo "$listen_ip" | tr -d ' ')
-        if validate_ip "$listen_ip"; then break; else echo "❌ 监听 IP 不在可选范围"; fi
+        if validate_ip "$listen_ip"; then break; else echo "❌ 监听 IP 不在本机接口范围"; fi
     done
 
+    # 监听端口
     while true; do
         read -rp "监听端口（1-65535）： " listen_port
         listen_port=$(echo "$listen_port" | tr -d ' ')
@@ -69,6 +66,7 @@ create_rule() {
         check_port "$listen_ip" "$listen_port" && break || echo "❌ 端口 $listen_port 在 $listen_ip 或 0.0.0.0 已被占用"
     done
 
+    # 远程地址
     while true; do
         read -rp "远程地址:端口 (例: 1.1.1.1:7777 或 ddns.com:8888): " remote
         remote=$(echo "$remote" | tr -d ' ')
@@ -76,6 +74,7 @@ create_rule() {
         echo "❌ 格式错误"
     done
 
+    # 规则名称
     while true; do
         read -rp "规则名称: " rule_tag
         rule_tag=$(echo "$rule_tag" | tr -d '" ' | tr -s '\t')
@@ -125,7 +124,7 @@ list_rules() {
 delete_rule() {
     mapfile -t LINE_NUMS < <(grep -n '\[\[endpoints\]\]' "$CONFIG_PATH" | cut -d: -f1)
     total=${#LINE_NUMS[@]}
-    [ $total -eq 0 ] && { echo "⚠️ 没有可删除的规则"; read -rp "按回车键返回..."; return; }
+    [ $total -eq 0 ] && { echo "⚠️ 没有可删除的规则"; read -rp "按回车返回..."; return; }
 
     echo "🗑️ 可删除的规则："
     for i in "${!LINE_NUMS[@]}"; do
