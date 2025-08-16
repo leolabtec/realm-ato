@@ -49,7 +49,7 @@ log_action() {
 
 create_rule() {
     echo "=== 新建 Realm 转发规则 ==="
-    echo "本机接口 IP："
+    echo "本机接口 IP：0.0.0.0"
     get_local_ips | sed 's/^/   - /'
     echo "公网 IP："
     get_public_ips | sed 's/^/   - /'
